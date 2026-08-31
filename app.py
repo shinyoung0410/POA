@@ -1,16 +1,30 @@
-# import streamlit as st
+import streamlit as st
 import requests
 import json
+import pandas as pd
 
-# --- 웹 상단 탭 및 설정 ---
-st.set_page_config(page_title="제일약품 듀글로우정 마케팅 전략 생성기", page_icon="💊", layout="wide")
+# --- 1. 웹 상단 탭 및 설정 (반드시 코드 최상단에 위치) ---
+st.set_page_config(
+    page_title="제일약품 듀글로우정 마케팅 전략 생성기",
+    page_icon="💊",
+    layout="wide"
+)
+
 st.title("💊 제일약품 듀글로우정 마케팅 전략 드래프트 Generator")
 st.write("내부 실무 데이터(UBIST, 처방 실적 등) 분석 및 최신 시장 이슈를 반영한 전략 초안을 생성합니다.")
 
-# --- 사이드바 (설정 영역) ---
+# --- 2. 사이드바 (설정 및 데이터 업로드) ---
 with st.sidebar:
     st.header("⚙️ 기본 설정")
+    
+    # Secrets 설정이 없어도 에러가 나지 않도록 안정적으로 처리
     default_key = ""
+    try:
+        if "GOOGLE_API_KEY" in st.secrets:
+            default_key = st.secrets["GOOGLE_API_KEY"]
+    except Exception:
+        default_key = ""
+
     api_key_input = st.text_input("Google API Key", value=default_key, type="password", help="Gemini API 키를 입력하세요.")
     
     st.markdown("---")
@@ -24,24 +38,24 @@ with st.sidebar:
     target_q = st.selectbox("전략 목표 분기/연도", ["2026년 하반기", "2027년 상반기", "2027년 전체"])
     generate_btn = st.button("🚀 마케팅 전략 드래프트 생성", type="primary")
 
-# A. Gemini REST API 호출 함수
+# --- 3. Gemini REST API 호출 함수 ---
 def generate_strategy_draft(api_key, context_text, target_period):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
     
     system_prompt = f"""
     당신은 제일약품의 수석 제약 마케팅 PM입니다. SGLT-2 inhibitor + TZD 복합제인 '듀글로우정(다파글리플로진+피오글리타존)'의 {target_period} 마케팅 전략 드래프트를 작성해야 합니다.
 
-    [제공된 내부 데이터 요약 및 참고사항]
+    [제공된 내부 데이터 및 첨부파일 분석 요약]
     {context_text}
 
     [필수 작성 항목 및 프레임워크]
-    1. Executive Summary (핵심 요약)
-    2. 시장 및 경쟁 환경 분석 (SGLT-2i + TZD 병용 처방 시장 및 경쟁 품목 동향)
+    1. Executive Summary (핵심 전략 요약)
+    2. 시장 및 경쟁 환경 분석 (SGLT-2i + TZD 병용 처방 시장 및 주요 경쟁 품목 동향)
     3. 전년도 성과 평가 및 SWOT 분석 (Strengths, Weaknesses, Opportunities, Threats)
-    4. 핵심 마케팅 타겟 및 메세지 (Endocrinology 전문의 및 종합병원/개원의별 타겟팅)
+    4. 핵심 마케팅 타겟 및 메시지 (내분비내과, 순환기내과 전문의 및 종합병원/개원의별 Academic Detailing 메시지)
     5. 전략적 세부 실행 과제 (Key Strategic Initiatives)
-       - 학술 마케팅 (심포지엄, 랜선 세미나, 학회 연계)
-       - 영업 현장 가이드 (Academic Detailing 메시지)
+       - 학술 마케팅 (심포지엄, 학회 연계, 랜선 세미나)
+       - 종합병원 DC(약사심의위원회) 랜딩 및 처방 확대 전략
     6. KPI 및 예상 ROI 모니터링 계획
 
     전문의 대상 전문 의학 용어와 실무 제약 마케팅 톤앤매너를 유지하여 논리적이고 구체적으로 작성하세요.
@@ -52,30 +66,52 @@ def generate_strategy_draft(api_key, context_text, target_period):
     }
     
     try:
-        response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=30)
+        response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=40)
         result = response.json()
+        
         if response.status_code == 200:
-            return result['candidates'][0]['content']['parts'][0]['text']
+            candidates = result.get('candidates', [])
+            if candidates:
+                return candidates[0]['content']['parts'][0]['text']
+            else:
+                return "Error: AI 응답 내용이 비어있습니다."
         else:
-            return f"Error: API 호출 실패 - {result.get('error', {}).get('message', '알 수 없는 오류')}"
+            error_msg = result.get('error', {}).get('message', '알 수 없는 오류')
+            return f"Error: API 호출 실패 - {error_msg}"
     except Exception as e:
-        return f"Error: 네트워크 문제 ({e})"
+        return f"Error: 네트워크 문제 또는 타임아웃 ({e})"
 
-# --- 메인 실행 화면 ---
+# --- 4. 메인 실행 로직 ---
 if generate_btn:
     if not api_key_input:
         st.error("사이드바에 Google API Key를 입력해 주세요!")
     else:
         with st.spinner("제공된 실적 데이터 분석 및 마케팅 전략 드래프트를 작성 중입니다..."):
             
-            # 업로드된 파일 정보 정리 (텍스트 요약 컨텍스트 생성)
+            # 업로드된 파일 정보 정리 및 파싱
             file_summary = []
-            if ppt_file: file_summary.append(f"- 전년도 전략 PPT 첨부됨 ({ppt_file.name})")
-            if ubist_file: file_summary.append(f"- UBIST 데이터 첨부됨 ({ubist_file.name})")
-            if rx_file: file_summary.append(f"- 처방전 실적 데이터 첨부됨 ({rx_file.name})")
-            if monitoring_file: file_summary.append(f"- 모니터링 실적 첨부됨 ({monitoring_file.name})")
             
-            context_text = "\n".join(file_summary) if file_summary else "첨부된 파일 없음 (기본 브랜드 지식 기반 작성)"
+            if ppt_file: 
+                file_summary.append(f"- 전년도 전략 PPT 첨부됨: {ppt_file.name}")
+            
+            if ubist_file:
+                try:
+                    df_ubist = pd.read_excel(ubist_file) if ubist_file.name.endswith('.xlsx') else pd.read_csv(ubist_file)
+                    file_summary.append(f"- UBIST 데이터 요약:\n{df_ubist.head(5).to_string()}")
+                except Exception:
+                    file_summary.append(f"- UBIST 파일 첨부됨: {ubist_file.name}")
+                    
+            if rx_file:
+                try:
+                    df_rx = pd.read_excel(rx_file) if rx_file.name.endswith('.xlsx') else pd.read_csv(rx_file)
+                    file_summary.append(f"- 처방전 실적 요약:\n{df_rx.head(5).to_string()}")
+                except Exception:
+                    file_summary.append(f"- 처방전 실적 파일 첨부됨: {rx_file.name}")
+                    
+            if monitoring_file: 
+                file_summary.append(f"- 모니터링 실적 파일 첨부됨: {monitoring_file.name}")
+            
+            context_text = "\n\n".join(file_summary) if file_summary else "첨부된 파일 없음 (기본 브랜드 지식 기반 작성)"
             
             # 전략 생성
             strategy_result = generate_strategy_draft(api_key_input, context_text, target_q)
@@ -97,7 +133,7 @@ if generate_btn:
                     mime="text/plain"
                 )
 
-# --- 하단 제안: 전략 수립 시 함께 활용할 추천 뉴스 키워드 ---
+# --- 5. 하단 추천 키워드 안내 ---
 st.markdown("---")
 st.subheader("🔍 전략 반영용 Google 검색 추천 이슈/뉴스 키워드")
 st.write("구글 검색을 통해 아래 뉴스 및 논문 이슈를 확보한 후 전략 메세지에 포함시키면 완성도가 더욱 높아집니다.")
